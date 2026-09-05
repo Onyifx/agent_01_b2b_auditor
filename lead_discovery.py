@@ -1,13 +1,31 @@
 import os
 import re
+import time
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 from db import supabase
 
-# Target geography and niche defaults
-DEFAULT_NICHE = "HVAC Contractors"
-DEFAULT_CITY = "Lagos"
+# Global Target Parameters
+TARGET_NICHES = [
+    "HVAC Contractors",
+    "Digital Marketing Agencies",
+    "B2B SaaS Companies",
+    "Solar Energy Installers",
+    "Commercial Plumbing Services",
+    "IT Managed Service Providers"
+]
+
+TARGET_CITIES = [
+    # North America
+    "New York", "Los Angeles", "Chicago", "Toronto",
+    # Europe
+    "London", "Berlin", "Paris", "Amsterdam",
+    # Asia-Pacific
+    "Singapore", "Sydney", "Tokyo",
+    # Middle East & Africa
+    "Dubai", "Riyadh", "Lagos", "Johannesburg"
+]
 
 def normalize_domain(url: str) -> str:
     """Standardizes domain strings for clean database deduplication."""
@@ -66,17 +84,16 @@ def extract_email_from_url(website_url: str) -> str:
 
     return list(found_emails)[0] if found_emails else ""
 
-def discover_leads(niche: str = DEFAULT_NICHE, city: str = DEFAULT_CITY, max_results: int = 10):
+def discover_leads_for_target(niche: str, city: str):
     """
-    Main lead discovery function.
-    Accepts raw lead dictionaries or integrates with directory APIs/scrapers.
+    Lead discovery worker function for a specific niche/city combination.
     """
-    print(f"🔍 Starting lead discovery for '{niche}' in '{city}'...")
+    print(f"\n🔍 Searching globally: '{niche}' in '{city}'...")
 
-    # Sample lead targets (Replace or feed dynamically via SerpAPI, Outscraper, or Google Maps API)
+    # Dynamic target leads (Integrate SerpAPI, Outscraper, or custom directory scraper here)
     raw_leads = [
         {
-            "business_name": "Apex HVAC Solutions",
+            "business_name": f"Global {niche} - {city}",
             "website_url": "https://example.com",
             "contact_email": "",
             "niche": niche,
@@ -120,12 +137,28 @@ def discover_leads(niche: str = DEFAULT_NICHE, city: str = DEFAULT_CITY, max_res
 
             if new_lead.data:
                 discovered_count += 1
-                print(f"✅ Logged new lead: {domain} ({email})")
+                print(f"✅ Logged new global lead: {domain} ({email}) [{city}]")
         except Exception as e:
             print(f"❌ Database insert error for {domain}: {str(e)}")
 
-    print(f"\n✨ Discovery run complete. Added {discovered_count} new leads.")
+        # Polite request delay to prevent rate-limiting
+        time.sleep(1)
+
     return discovered_count
 
+def run_global_discovery():
+    """
+    Runs global lead discovery across multiple international cities and B2B niches.
+    """
+    print("🌐 Launching Global B2B Lead Discovery Run...")
+    total_new_leads = 0
+
+    for niche in TARGET_NICHES:
+        for city in TARGET_CITIES:
+            added = discover_leads_for_target(niche=niche, city=city)
+            total_new_leads += added
+
+    print(f"\n✨ Global discovery run complete. Total new leads added: {total_new_leads}")
+
 if __name__ == "__main__":
-    discover_leads()
+    run_global_discovery()
