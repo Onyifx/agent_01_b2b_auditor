@@ -27,6 +27,10 @@ TARGET_CITIES = [
     "Dubai", "Riyadh", "Lagos", "Johannesburg"
 ]
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
 def normalize_domain(url: str) -> str:
     """Standardizes domain strings for clean database deduplication."""
     if not url:
@@ -38,10 +42,48 @@ def normalize_domain(url: str) -> str:
     domain = domain.lower().replace("www.", "")
     return domain.split("/")[0]
 
+def search_duckduckgo_leads(niche: str, city: str, max_results: int = 5) -> list:
+    """
+    Queries DuckDuckGo HTML search to retrieve real-world business URLs for a given query.
+    """
+    query = f"{niche} in {city}"
+    search_url = "https://html.duckduckgo.com/html/"
+    data = {"q": query}
+    
+    found_urls = []
+    
+    try:
+        res = requests.post(search_url, data=data, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            for a in soup.find_all("a", class_="result__url"):
+                raw_href = a.get("href", "").strip()
+                if raw_href:
+                    # Clean DuckDuckGo redirect URLs if present
+                    if "/l/?" in raw_href:
+                        parsed_query = urllib.parse.parse_qs(urllib.parse.urlparse(raw_href).query)
+                        raw_href = parsed_query.get("uddg", [raw_href])[0]
+                    
+                    domain = normalize_domain(raw_href)
+                    # Filter out search engines, social networks, and directory platforms
+                    ignored_domains = [
+                        "duckduckgo.com", "google.com", "bing.com", "facebook.com",
+                        "linkedin.com", "instagram.com", "yelp.com", "yellowpages.com",
+                        "wikipedia.org", "clutch.co", "tripadvisor.com"
+                    ]
+                    if domain and not any(ignored in domain for ignored in ignored_domains):
+                        found_urls.append((domain, f"https://{domain}"))
+                        
+                if len(found_urls) >= max_results:
+                    break
+    except Exception as e:
+        print(f"⚠️ Search error for '{query}': {str(e)}")
+
+    return found_urls
+
 def extract_email_from_url(website_url: str) -> str:
     """
-    Fallback Extractor: Scrapes website homepage, /contact, and /about 
-    for mailto links and email regex patterns.
+    Scrapes website homepage, /contact, and /about for mailto links and email regex patterns.
     """
     if not website_url.startswith(("http://", "https://")):
         website_url = "https://" + website_url
@@ -50,16 +92,12 @@ def extract_email_from_url(website_url: str) -> str:
     found_emails = set()
     paths_to_check = ["", "/contact", "/contact-us", "/about", "/about-us"]
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-
     base_domain = normalize_domain(website_url)
 
     for path in paths_to_check:
         target_url = f"https://{base_domain}{path}"
         try:
-            res = requests.get(target_url, headers=headers, timeout=5)
+            res = requests.get(target_url, headers=HEADERS, timeout=5)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, "html.parser")
                 
@@ -73,7 +111,6 @@ def extract_email_from_url(website_url: str) -> str:
                 # Check body text regex
                 matches = re.findall(email_regex, res.text)
                 for match in matches:
-                    # Ignore common asset false positives
                     if not match.endswith((".png", ".jpg", ".jpeg", ".svg", ".webp", ".js", ".css")):
                         found_emails.add(match)
 
@@ -86,71 +123,59 @@ def extract_email_from_url(website_url: str) -> str:
 
 def discover_leads_for_target(niche: str, city: str):
     """
-    Lead discovery worker function for a specific niche/city combination.
+    Discovers live leads dynamically for a given niche and city.
     """
-    print(f"\n🔍 Searching globally: '{niche}' in '{city}'...")
+    print(f"\n🔍 Searching live web: '{niche}' in '{city}'...")
 
-    # Dynamic target leads (Integrate SerpAPI, Outscraper, or custom directory scraper here)
-    raw_leads = [
-        {
-            "business_name": f"Global {niche} - {city}",
-            "website_url": "https://example.com",
-            "contact_email": "",
-            "niche": niche,
-            "city": city
-        }
-    ]
+    live_targets = search_duckduckgo_leads(niche, city, max_results=3)
+    if not live_targets:
+        print(f"  ℹ️ No direct domain targets found for {niche} in {city}.")
+        return 0
 
     discovered_count = 0
 
-    for lead in raw_leads:
-        domain = normalize_domain(lead.get("website_url"))
-        if not domain:
-            continue
-
+    for domain, website_url in live_targets:
         # 1. Deduplication check in Supabase
         existing = supabase.table("leads").select("id").eq("domain", domain).execute()
         if existing.data:
-            print(f"⏭️ Skipping {domain} (already in database)")
+            print(f"  ⏭️ Skipping {domain} (already in database)")
             continue
 
-        # 2. Fallback Email Extractor if email missing
-        email = lead.get("contact_email")
-        if not email:
-            print(f"🔎 Scraping email fallback for {domain}...")
-            email = extract_email_from_url(domain)
+        # 2. Extract email dynamically from homepage / contact pages
+        print(f"  🔎 Scraping contact email for {domain}...")
+        email = extract_email_from_url(website_url)
 
         if not email:
-            print(f"⚠️ Could not find contact email for {domain}. Skipping...")
+            print(f"  ⚠️ Could not find contact email for {domain}. Skipping...")
             continue
 
-        # 3. Save to Supabase leads table
+        # 3. Save real lead to Supabase
         try:
+            business_name = domain.split(".")[0].replace("-", " ").title()
             new_lead = supabase.table("leads").insert({
                 "domain": domain,
-                "business_name": lead.get("business_name", ""),
+                "business_name": business_name,
                 "contact_email": email,
-                "niche": lead.get("niche", niche),
-                "city": lead.get("city", city),
+                "niche": niche,
+                "city": city,
                 "status": "DISCOVERED"
             }).execute()
 
             if new_lead.data:
                 discovered_count += 1
-                print(f"✅ Logged new global lead: {domain} ({email}) [{city}]")
+                print(f"  ✅ Logged new lead: {domain} ({email}) [{city}]")
         except Exception as e:
-            print(f"❌ Database insert error for {domain}: {str(e)}")
+            print(f"  ❌ Database insert error for {domain}: {str(e)}")
 
-        # Polite request delay to prevent rate-limiting
         time.sleep(1)
 
     return discovered_count
 
 def run_global_discovery():
     """
-    Runs global lead discovery across multiple international cities and B2B niches.
+    Iterates through all target niches and cities to populate Supabase with live leads.
     """
-    print("🌐 Launching Global B2B Lead Discovery Run...")
+    print("🌐 Launching Live B2B Lead Discovery Run...")
     total_new_leads = 0
 
     for niche in TARGET_NICHES:
