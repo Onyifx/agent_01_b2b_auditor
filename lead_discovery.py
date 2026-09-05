@@ -4,6 +4,7 @@ import time
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
 from db import supabase
 
 # Global Target Parameters
@@ -42,42 +43,31 @@ def normalize_domain(url: str) -> str:
     domain = domain.lower().replace("www.", "")
     return domain.split("/")[0]
 
-def search_duckduckgo_leads(niche: str, city: str, max_results: int = 5) -> list:
+def search_web_leads(niche: str, city: str, max_results: int = 3) -> list:
     """
-    Queries DuckDuckGo HTML search to retrieve real-world business URLs for a given query.
+    Queries DuckDuckGo via DDGS client to retrieve target business URLs.
     """
     query = f"{niche} in {city}"
-    search_url = "https://html.duckduckgo.com/html/"
-    data = {"q": query}
-    
     found_urls = []
-    
+    ignored_domains = [
+        "duckduckgo.com", "google.com", "bing.com", "facebook.com",
+        "linkedin.com", "instagram.com", "yelp.com", "yellowpages.com",
+        "wikipedia.org", "clutch.co", "tripadvisor.com"
+    ]
+
     try:
-        res = requests.post(search_url, data=data, headers=HEADERS, timeout=10)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, "html.parser")
-            for a in soup.find_all("a", class_="result__url"):
-                raw_href = a.get("href", "").strip()
-                if raw_href:
-                    # Clean DuckDuckGo redirect URLs if present
-                    if "/l/?" in raw_href:
-                        parsed_query = urllib.parse.parse_qs(urllib.parse.urlparse(raw_href).query)
-                        raw_href = parsed_query.get("uddg", [raw_href])[0]
-                    
+        with DDGS() as ddgs:
+            results = ddgs.text(query, max_results=max_results * 3)
+            if results:
+                for r in results:
+                    raw_href = r.get("href", "")
                     domain = normalize_domain(raw_href)
-                    # Filter out search engines, social networks, and directory platforms
-                    ignored_domains = [
-                        "duckduckgo.com", "google.com", "bing.com", "facebook.com",
-                        "linkedin.com", "instagram.com", "yelp.com", "yellowpages.com",
-                        "wikipedia.org", "clutch.co", "tripadvisor.com"
-                    ]
                     if domain and not any(ignored in domain for ignored in ignored_domains):
                         found_urls.append((domain, f"https://{domain}"))
-                        
-                if len(found_urls) >= max_results:
-                    break
+                        if len(found_urls) >= max_results:
+                            break
     except Exception as e:
-        print(f"⚠️ Search error for '{query}': {str(e)}")
+        print(f"  ⚠️ Search notice for '{query}': {str(e)}")
 
     return found_urls
 
@@ -127,7 +117,7 @@ def discover_leads_for_target(niche: str, city: str):
     """
     print(f"\n🔍 Searching live web: '{niche}' in '{city}'...")
 
-    live_targets = search_duckduckgo_leads(niche, city, max_results=3)
+    live_targets = search_web_leads(niche, city, max_results=3)
     if not live_targets:
         print(f"  ℹ️ No direct domain targets found for {niche} in {city}.")
         return 0
@@ -141,7 +131,7 @@ def discover_leads_for_target(niche: str, city: str):
             print(f"  ⏭️ Skipping {domain} (already in database)")
             continue
 
-        # 2. Extract email dynamically from homepage / contact pages
+        # 2. Extract email dynamically
         print(f"  🔎 Scraping contact email for {domain}...")
         email = extract_email_from_url(website_url)
 
@@ -149,7 +139,7 @@ def discover_leads_for_target(niche: str, city: str):
             print(f"  ⚠️ Could not find contact email for {domain}. Skipping...")
             continue
 
-        # 3. Save real lead to Supabase
+        # 3. Save lead to Supabase
         try:
             business_name = domain.split(".")[0].replace("-", " ").title()
             new_lead = supabase.table("leads").insert({
@@ -173,7 +163,7 @@ def discover_leads_for_target(niche: str, city: str):
 
 def run_global_discovery():
     """
-    Iterates through all target niches and cities to populate Supabase with live leads.
+    Iterates through target niches and cities with a delay to avoid rate limits.
     """
     print("🌐 Launching Live B2B Lead Discovery Run...")
     total_new_leads = 0
@@ -182,6 +172,8 @@ def run_global_discovery():
         for city in TARGET_CITIES:
             added = discover_leads_for_target(niche=niche, city=city)
             total_new_leads += added
+            # Pause between searches to prevent cloud IP throttling
+            time.sleep(2)
 
     print(f"\n✨ Global discovery run complete. Total new leads added: {total_new_leads}")
 
