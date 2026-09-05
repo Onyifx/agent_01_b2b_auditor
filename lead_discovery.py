@@ -4,7 +4,7 @@ import time
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 from db import supabase
 
 # Global Target Parameters
