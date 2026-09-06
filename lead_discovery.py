@@ -7,6 +7,9 @@ from bs4 import BeautifulSoup
 from ddgs import DDGS
 from db import supabase
 
+# Live Render API configuration
+RENDER_API_URL = os.getenv("RENDER_API_URL", "https://agent-01-b2b-auditor.onrender.com").rstrip("/")
+
 # Global Target Parameters
 TARGET_NICHES = [
     "HVAC Contractors",
@@ -43,10 +46,27 @@ def normalize_domain(url: str) -> str:
     domain = domain.lower().replace("www.", "")
     return domain.split("/")[0]
 
+def trigger_remote_audit(domain: str, contact_email: str, business_name: str = "", niche: str = "", city: str = ""):
+    """Pings the live Render FastAPI endpoint to queue an automated audit, PDF report, and email pitch."""
+    endpoint = f"{RENDER_API_URL}/audit"
+    payload = {
+        "domain": domain,
+        "contact_email": contact_email,
+        "business_name": business_name,
+        "niche": niche,
+        "city": city
+    }
+    try:
+        res = requests.post(endpoint, json=payload, timeout=10)
+        if res.status_code == 200:
+            print(f"  🚀 Queued live Render audit for {domain}")
+        else:
+            print(f"  ⚠️ Failed to queue remote audit for {domain} (HTTP {res.status_code}): {res.text}")
+    except Exception as e:
+        print(f"  ❌ Error triggering remote audit for {domain}: {str(e)}")
+
 def search_web_leads(niche: str, city: str, max_results: int = 3) -> list:
-    """
-    Queries DuckDuckGo via DDGS client to retrieve target business URLs.
-    """
+    """Queries DuckDuckGo via DDGS client to retrieve target business URLs."""
     query = f"{niche} in {city}"
     found_urls = []
     ignored_domains = [
@@ -72,9 +92,7 @@ def search_web_leads(niche: str, city: str, max_results: int = 3) -> list:
     return found_urls
 
 def extract_email_from_url(website_url: str) -> str:
-    """
-    Scrapes website homepage, /contact, and /about for mailto links and email regex patterns.
-    """
+    """Scrapes website homepage, /contact, and /about for mailto links and email regex patterns."""
     if not website_url.startswith(("http://", "https://")):
         website_url = "https://" + website_url
 
@@ -112,9 +130,7 @@ def extract_email_from_url(website_url: str) -> str:
     return list(found_emails)[0] if found_emails else ""
 
 def discover_leads_for_target(niche: str, city: str):
-    """
-    Discovers live leads dynamically for a given niche and city.
-    """
+    """Discovers live leads dynamically for a given niche and city and queues audits on Render."""
     print(f"\n🔍 Searching live web: '{niche}' in '{city}'...")
 
     live_targets = search_web_leads(niche, city, max_results=3)
@@ -154,6 +170,15 @@ def discover_leads_for_target(niche: str, city: str):
             if new_lead.data:
                 discovered_count += 1
                 print(f"  ✅ Logged new lead: {domain} ({email}) [{city}]")
+                
+                # 4. Immediately trigger audit pipeline via live Render endpoint
+                trigger_remote_audit(
+                    domain=domain,
+                    contact_email=email,
+                    business_name=business_name,
+                    niche=niche,
+                    city=city
+                )
         except Exception as e:
             print(f"  ❌ Database insert error for {domain}: {str(e)}")
 
@@ -162,9 +187,7 @@ def discover_leads_for_target(niche: str, city: str):
     return discovered_count
 
 def run_global_discovery():
-    """
-    Iterates through target niches and cities with a delay to avoid rate limits.
-    """
+    """Iterates through target niches and cities with a delay to avoid rate limits."""
     print("🌐 Launching Live B2B Lead Discovery Run...")
     total_new_leads = 0
 
@@ -172,10 +195,9 @@ def run_global_discovery():
         for city in TARGET_CITIES:
             added = discover_leads_for_target(niche=niche, city=city)
             total_new_leads += added
-            # Pause between searches to prevent cloud IP throttling
             time.sleep(2)
 
-    print(f"\n✨ Global discovery run complete. Total new leads added: {total_new_leads}")
+    print(f"\n✨ Global discovery run complete. Total new leads added & queued: {total_new_leads}")
 
 if __name__ == "__main__":
     run_global_discovery()
