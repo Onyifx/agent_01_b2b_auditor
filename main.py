@@ -27,13 +27,29 @@ class PaymentLinkRequest(BaseModel):
     lead_id: str
 
 def process_full_audit(lead_id: str, domain: str, contact_email: str):
+    """Audits site, generates AI summary & PDF, generates Paystack link, and sends email pitch."""
     try:
+        supabase.table("leads").update({"status": "PROCESSING"}).eq("id", lead_id).execute()
+
+        # 1. Technical Audit & Gemini Analysis
         audit_data = audit_website(domain)
         ai_analysis = analyze_audit_data(audit_data)
+        
+        # 2. Render PDF Report
         pdf_filename = f"{domain.replace('.', '_')}_audit.pdf"
         generate_pdf_report(audit_data, ai_analysis, pdf_filename)
-        send_audit_email(contact_email, domain, pdf_filename)
 
+        # 3. Create Paystack Checkout Link automatically
+        try:
+            checkout_url = create_paystack_checkout(lead_id, domain, contact_email)
+        except Exception as e:
+            print(f"  ⚠️ Checkout creation notice: {str(e)}")
+            checkout_url = ""
+
+        # 4. Email PDF with embedded checkout button
+        send_audit_email(contact_email, domain, pdf_filename, checkout_url=checkout_url)
+
+        # 5. Log audit metrics to Supabase
         supabase.table("audit_logs").insert({
             "lead_id": lead_id,
             "load_time_seconds": audit_data.get("load_time_seconds"),
@@ -103,12 +119,8 @@ def generate_payment_link(req: PaymentLinkRequest):
 
 @app.get("/verify-payment/{reference}")
 def verify_payment(reference: str):
-    """
-    Manually verifies a payment reference with Paystack's API
-    and updates lead status in Supabase upon successful payment.
-    """
     if not PAYSTACK_SECRET_KEY:
-        raise HTTPException(status_code=500, detail="PAYSTACK_SECRET_KEY is missing in environment.")
+        raise HTTPException(status_code=500, detail="PAYSTACK_SECRET_KEY missing")
 
     url = f"https://api.paystack.co/transaction/verify/{reference}"
     headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"}
@@ -136,19 +148,9 @@ def verify_payment(reference: str):
                 supabase.table("leads").update({"status": "CONVERTED"}).eq("id", lead_id).execute()
                 print(f"💰 Direct verification succeeded for lead ID: {lead_id}")
 
-            return {
-                "status": "verified",
-                "lead_id": lead_id,
-                "customer_email": customer_email,
-                "amount": amount,
-                "reference": reference
-            }
+            return {"status": "verified", "lead_id": lead_id, "amount": amount, "reference": reference}
         else:
-            return {
-                "status": "unverified",
-                "message": res_data.get("message", "Transaction not completed"),
-                "details": res_data
-            }
+            return {"status": "unverified", "message": res_data.get("message", "Transaction incomplete")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -156,7 +158,6 @@ def verify_payment(reference: str):
 async def paystack_webhook(request: Request, x_paystack_signature: str = Header(None)):
     payload = await request.body()
 
-    # Verify HMAC signature if Paystack key is set
     if PAYSTACK_SECRET_KEY and x_paystack_signature:
         computed_signature = hmac.new(
             PAYSTACK_SECRET_KEY.encode('utf-8'),
@@ -168,14 +169,12 @@ async def paystack_webhook(request: Request, x_paystack_signature: str = Header(
             raise HTTPException(status_code=400, detail="Invalid Paystack signature")
 
     data = await request.json()
-    event = data.get("event")
-
-    if event == "charge.success":
+    if data.get("event") == "charge.success":
         transaction_data = data.get("data", {})
         metadata = transaction_data.get("metadata", {})
         lead_id = metadata.get("lead_id")
         reference = transaction_data.get("reference")
-        amount = transaction_data.get("amount", 2900) / 100.0
+        amount = transaction_data.get("amount", 4500000) / 100.0
         customer_email = transaction_data.get("customer", {}).get("email", "")
 
         if lead_id:
@@ -192,4 +191,4 @@ async def paystack_webhook(request: Request, x_paystack_signature: str = Header(
     return {"status": "success"}
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
