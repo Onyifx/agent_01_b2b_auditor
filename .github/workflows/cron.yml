@@ -37,10 +37,12 @@ jobs:
           playwright install chromium --with-deps
 
       - name: Run Lead Discovery & Queue Render Audits
+        continue-on-error: true
         run: |
           python lead_discovery.py
 
       - name: Execute Fallback Batch Audits & Send Email Pitches
+        continue-on-error: true
         run: |
           python run_batch_audit.py
 
