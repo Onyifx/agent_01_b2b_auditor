@@ -17,6 +17,7 @@ jobs:
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       PAYSTACK_SECRET_KEY: ${{ secrets.PAYSTACK_SECRET_KEY }}
       RENDER_API_URL: ${{ secrets.RENDER_API_URL || 'https://agent-01-b2b-auditor.onrender.com' }}
+      ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
 
     steps:
       - name: Checkout Repository
@@ -40,3 +41,7 @@ jobs:
       - name: Execute Fallback Batch Audits & Send Email Pitches
         run: |
           python run_batch_audit.py
+
+      - name: Send Admin Progress Summary Email
+        run: |
+          python send_admin_report.py
