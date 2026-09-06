@@ -2,8 +2,7 @@ import os
 import time
 import httpx
 from dotenv import load_dotenv
-from supabase import create_client, Client
-from supabase.lib.client_options import ClientOptions
+from supabase import create_client, Client, ClientOptions
 
 # Load environment variables
 load_dotenv()
