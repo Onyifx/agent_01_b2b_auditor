@@ -1,10 +1,13 @@
 import os
+import smtplib
 from datetime import datetime, timedelta, timezone
-import resend
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from db import supabase
 
-resend.api_key = os.getenv("RESEND_API_KEY")
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")  # Set in GitHub Secrets or environment variables
+GMAIL_USER = os.getenv("GMAIL_USER", "")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", GMAIL_USER)  # Defaults to GMAIL_USER if ADMIN_EMAIL is omitted
 
 def fetch_6hour_metrics():
     """Queries Supabase for activity logged in the past 6 hours."""
@@ -19,9 +22,14 @@ def fetch_6hour_metrics():
     audits_completed = audits_res.count if audits_res.count is not None else len(audits_res.data or [])
 
     # 3. Overall database pipeline totals
-    total_leads = supabase.table("leads").select("id", count="exact").execute().count
-    total_audited = supabase.table("leads").select("id", count="exact").eq("status", "AUDITED").execute().count
-    total_converted = supabase.table("leads").select("id", count="exact").eq("status", "CONVERTED").execute().count
+    total_leads_res = supabase.table("leads").select("id", count="exact").execute()
+    total_leads = total_leads_res.count if total_leads_res.count is not None else 0
+
+    total_audited_res = supabase.table("leads").select("id", count="exact").eq("status", "AUDITED").execute()
+    total_audited = total_audited_res.count if total_audited_res.count is not None else 0
+
+    total_converted_res = supabase.table("leads").select("id", count="exact").eq("status", "CONVERTED").execute()
+    total_converted = total_converted_res.count if total_converted_res.count is not None else 0
 
     # 4. Recent Revenue
     sales_res = supabase.table("sales").select("amount").gte("created_at", six_hours_ago).execute()
@@ -30,20 +38,31 @@ def fetch_6hour_metrics():
     return {
         "new_leads": new_leads,
         "audits_completed": audits_completed,
-        "total_leads": total_leads or 0,
-        "total_audited": total_audited or 0,
-        "total_converted": total_converted or 0,
+        "total_leads": total_leads,
+        "total_audited": total_audited,
+        "total_converted": total_converted,
         "revenue_6h": revenue_6h
     }
 
 def send_admin_digest():
-    """Formats and emails the 6-hour run summary to your personal inbox."""
-    if not ADMIN_EMAIL:
-        print("⚠️ ADMIN_EMAIL environment variable not set. Skipping admin update email.")
+    """Formats and emails the 6-hour run summary to your inbox using Gmail SMTP."""
+    target_email = ADMIN_EMAIL or GMAIL_USER
+
+    if not GMAIL_USER or not GMAIL_APP_PASSWORD:
+        print("⚠️ Missing GMAIL_USER or GMAIL_APP_PASSWORD. Skipping admin update email.")
+        return
+
+    if not target_email:
+        print("⚠️ No target recipient email specified. Skipping admin update email.")
         return
 
     metrics = fetch_6hour_metrics()
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    msg = MIMEMultipart()
+    msg["From"] = f"Engine Monitor <{GMAIL_USER}>"
+    msg["To"] = target_email
+    msg["Subject"] = f"⚡ Autonomous Engine Report: {metrics['new_leads']} New Leads & {metrics['audits_completed']} Audits Sent"
 
     html_content = f"""
     <div style="font-family: Arial, sans-serif; padding: 20px; color: #333; max-width: 600px; border: 1px solid #e0e0e0; border-radius: 8px;">
@@ -80,18 +99,15 @@ def send_admin_digest():
     </div>
     """
 
-    params = {
-        "from": "Engine Monitor <onboarding@resend.dev>",
-        "to": [ADMIN_EMAIL],
-        "subject": f"⚡ Autonomous Engine Report: {metrics['new_leads']} New Leads & {metrics['audits_completed']} Audits Sent",
-        "html": html_content
-    }
+    msg.attach(MIMEText(html_content, "html"))
 
     try:
-        resend.Emails.send(params)
-        print(f"✅ Admin summary email successfully sent to {ADMIN_EMAIL}")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+            server.send_message(msg)
+        print(f"✅ Admin summary email successfully sent to {target_email} via Gmail SMTP")
     except Exception as e:
-        print(f"❌ Failed to send admin summary email: {str(e)}")
+        print(f"❌ Failed to send admin summary email via Gmail SMTP: {str(e)}")
 
 if __name__ == "__main__":
     send_admin_digest()
