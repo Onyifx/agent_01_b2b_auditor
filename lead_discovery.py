@@ -2,6 +2,7 @@ import os
 import re
 import time
 import urllib.parse
+import httpx
 import requests
 from bs4 import BeautifulSoup
 from ddgs import DDGS
@@ -34,6 +35,26 @@ TARGET_CITIES = [
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
+
+def execute_supabase_query(query_func, max_retries: int = 3, delay: int = 2):
+    """Executes a Supabase database call with automatic retry handling for network drops/protocol disconnects."""
+    for attempt in range(max_retries):
+        try:
+            return query_func()
+        except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadTimeout, httpx.HTTPError) as e:
+            if attempt < max_retries - 1:
+                print(f"  ⚠️ Supabase network error ({type(e).__name__}). Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+            else:
+                print(f"  ❌ Failed to execute Supabase query after {max_retries} attempts.")
+                raise e
+        except Exception as e:
+            err_msg = str(e).lower()
+            if ("disconnected" in err_msg or "remoteprotocolerror" in err_msg or "timeout" in err_msg) and attempt < max_retries - 1:
+                print(f"  ⚠️ Supabase connection exception ({str(e)}). Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+            else:
+                raise e
 
 def normalize_domain(url: str) -> str:
     """Standardizes domain strings for clean database deduplication."""
@@ -141,9 +162,11 @@ def discover_leads_for_target(niche: str, city: str):
     discovered_count = 0
 
     for domain, website_url in live_targets:
-        # 1. Deduplication check in Supabase
-        existing = supabase.table("leads").select("id").eq("domain", domain).execute()
-        if existing.data:
+        # 1. Deduplication check in Supabase (wrapped with connection retries)
+        existing = execute_supabase_query(
+            lambda: supabase.table("leads").select("id").eq("domain", domain).execute()
+        )
+        if existing and existing.data:
             print(f"  ⏭️ Skipping {domain} (already in database)")
             continue
 
@@ -155,19 +178,21 @@ def discover_leads_for_target(niche: str, city: str):
             print(f"  ⚠️ Could not find contact email for {domain}. Skipping...")
             continue
 
-        # 3. Save lead to Supabase
+        # 3. Save lead to Supabase (wrapped with connection retries)
         try:
             business_name = domain.split(".")[0].replace("-", " ").title()
-            new_lead = supabase.table("leads").insert({
-                "domain": domain,
-                "business_name": business_name,
-                "contact_email": email,
-                "niche": niche,
-                "city": city,
-                "status": "DISCOVERED"
-            }).execute()
+            new_lead = execute_supabase_query(
+                lambda: supabase.table("leads").insert({
+                    "domain": domain,
+                    "business_name": business_name,
+                    "contact_email": email,
+                    "niche": niche,
+                    "city": city,
+                    "status": "DISCOVERED"
+                }).execute()
+            )
 
-            if new_lead.data:
+            if new_lead and new_lead.data:
                 discovered_count += 1
                 print(f"  ✅ Logged new lead: {domain} ({email}) [{city}]")
                 
